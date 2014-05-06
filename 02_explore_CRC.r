@@ -12,6 +12,8 @@ d <- longTable
 rm(longTable)
 str(d)
 
+d <- d[,1:27]
+
 #######################################################
 #########              RECODING & CLEANING 
 #######################################################
@@ -21,7 +23,7 @@ d$ASD <- as.factor(ifelse(as.numeric(d$Subject) >= 500, "ASD", "TD"))
 
 # Label coded looks with stimuli names.
 badLookCodes <- c("-", ".", "0.5")
-badLooks <- d$Looks %in% badLookCodes
+badLooks <- d$Look %in% badLookCodes
 d$GazeByImageAOI <- as.character(d$Look)
 d$GazeByImageAOI[badLooks] <- NA
 d$GazeByImageAOI <- as.numeric(d$GazeByImageAOI)
@@ -86,7 +88,7 @@ d$Target2 <- d$Target
 #list of participant IDs to remove 
 participants <- c(301, 413, 417, 418, 422, 501, 502, 504, 506, 507, 510, 511, 513, 517, 518, 521, 523, 524) 
 d_matched <- d %.% mutate(match=match(Subject, participants, nomatch=NA)) %.% filter(is.na(match)) 
-
+save(d_matched,file="./looking_data_with_MatchedPinfo_clean.Rdata")
 
 ##### Participants with minimum CDI subset 
 ## set thresholds for minimum CDI scores for inclusion in the subset 
@@ -177,34 +179,42 @@ levels(d.ancova$Condition)
 # Aggregated Plots
 # aggregated = each child contributes one average proportion of looks across trials
 #   in each condition to the average of Group proportion of looking in the plots
-by_subject <- AggregateLooks(d_matched, ASD + Subject + Time + Condition ~ GazeByImageAOI)
+# by_subject <- AggregateLooks(d_matched, ASD + Subject + Time + Condition ~ GazeByImageAOI)
+by_subject <- d_matched %.%
+  group_by(ASD,Condition,Time) %.%
+  summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
+
 m_aggregated_proportion <- by_subject %.% group_by(ASD, Condition, Time) %.% summarise(Proportion = mean(Proportion))
 qplot(data = m_aggregated_proportion, x = Time, y = Proportion, color = Condition) + 
   facet_grid(ASD ~ .) + geom_line()+ geom_line(y=.5, colour="gray48") + labs(title = "Matched Groups")
 
 m_proportion_over_trials <- d_matched %.% 
-  group_by(Subject,Condition,Time) %.% 
+  group_by(Subject,ASD,Condition,Time) %.% 
   summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
 
-d_matched <- merge(d_matched,m_proportion_over_trials,by="Subject")
-names(m_aggregated_proportion)
+m_proportion_over_trials <- merge(m_proportion_over_trials,unique(d_matched[,c("Subject","CDIWG_WU")]),by="Subject")
+head(m_proportion_over_trials)
 
-testWindow <- by_subject %.% filter(Time>=200 & Time<=1800)
-dim(by_subject) - dim(testWindow)
+save(m_proportion_over_trials,file="./matched_level1.Rdata")
+
+
+testWindow <- m_proportion_over_trials %.% filter(Time>=200 & Time<=1800)
+dim(m_proportion_over_trials) - dim(testWindow)
 #testWindowSummary collapses across time-bins to create a proportion of 
 # time looking by participant x condition (3 rows per participant )
 testWindowSummary <- testWindow %.% group_by(Subject,ASD,Condition) %.% 
-  summarise(ProportionTestWindow=mean(Proportion,na.rm=TRUE)) %.% ungroup()
+  summarise(ProportionTestWindow=mean(Proportion,na.rm=TRUE))%.% ungroup()
 # testWindowSummaryWide creates a wide dataset that has only one row per 
 #   participant, and a column for each condition  
 testWindowSummaryWide <- reshape(testWindowSummary, idvar="Subject", 
            direction="wide", v.names="ProportionTestWindow", timevar="Condition") 
 
 
-baselineWindow <- by_subject %.% filter(Time>=-1400 & Time<200)
-dim(by_subject) - dim(baselineWindow)
+baselineWindow <- m_proportion_over_trials %.% filter(Time>=-1400 & Time<200)
+dim(m_proportion_over_trials) - dim(baselineWindow)
 #same as lines above, but for baseline 
 baselineWindowSummary <- baselineWindow %.% group_by(Subject,ASD,Condition) %.% summarise(ProportionBaseline=mean(Proportion,na.rm=TRUE))
+
 baselineWindowSummaryWide <- reshape(baselineWindowSummary, idvar="Subject", direction="wide", v.names="ProportionBaseline", timevar="Condition") 
 
 ########## MERGE CALCULATED VARIABLES ABOVE INTO IN PARTICPANT INFO 
@@ -238,8 +248,18 @@ contrasts(dm.ancova$Condition) <- varContrasts(dm.ancova$Condition,Type="POC",
 
 matched.ancova<-lm(DiffScore~ASD*Condition,data=dm.ancova)
 summary(matched.ancova)
+Anova(matched.ancova,type=3)
+levels(dm.ancova$Condition)
+library(nlme)
+library(lme4)
+m_proportion_over_trials$C_CDIWG_WU <- m_proportion_over_trials$CDIWG_WU - mean(m_proportion_over_trials$CDIWG_WU)
+RIM <- lmer(Proportion~Time+I(Time^2)+ASD*Condition+C_CDIWG_WU+(1|Subject),data=m_proportion_over_trials)
+summary(RIM)
 
-levels(d.ancova$Condition)
+RIM <- lme(Proportion ~ Time+ASD+Condition, random = ~ 1 | Subject, m_proportion_over_trials, method = 'ML')
+
+RSM <- lme(attit ~ age11, random = ~ age11 | id, NYS, method = 'ML')
+
 
 
 

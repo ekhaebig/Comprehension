@@ -9,8 +9,8 @@ print("Reading in the raw data from text file...")
 # subject, and many empty lines) we need to read in this file a
 # little more carefully than we would otherwise:
 
-setwd("F:/Comprehension")
-setwd("G:/Comprehension")
+# setwd("F:/Comprehension")
+# setwd("G:/Comprehension")
 
 # Open a connection to the file, and specify that it is read-only
 f <- file("./Semantic_merged_5.5.14.txt",open="r")
@@ -186,11 +186,11 @@ longTable <- merge(longTable, participantinfo, by.x="Subject", by.y="ID")
 ######### SAVE DATASET
 longTable[ longTable==-99 ] <- NA
 save(longTable, file = "looking_data.Rdata")
-
-# checking things
-longTable2 <- longTable
-rm(longTable)
-load(file="looking_data.Rdata")
-str(longTable)
+# 
+# # checking things
+# longTable2 <- longTable
+# rm(longTable)
+# load(file="looking_data.Rdata")
+# str(longTable)
 
 
