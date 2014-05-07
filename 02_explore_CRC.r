@@ -7,12 +7,14 @@ library(dplyr)
 library(lattice)
 
 # Load the data
+
 load(file="./looking_data.Rdata")
 d <- longTable
 rm(longTable)
 str(d)
 
-d <- d[,1:27]
+d <- d[,1:27]  # takes out the variables after the 27th variable (Vineland, ADOS, ADI-R)
+str(d)
 
 #######################################################
 #########              RECODING & CLEANING 
@@ -90,6 +92,256 @@ participants <- c(301, 413, 417, 418, 422, 501, 502, 504, 506, 507, 510, 511, 51
 d_matched <- d %.% mutate(match=match(Subject, participants, nomatch=NA)) %.% filter(is.na(match)) 
 save(d_matched,file="./looking_data_with_MatchedPinfo_clean.Rdata")
 
+m_count_trials <- d_matched %.% group_by(Subject, Condition) %.% summarise(NumTrials=n_distinct(TrialNo))
+m_count_trials 
+with(m_count_trials,hist(NumTrials[Condition=="BothDiff"]))
+with(m_count_trials,hist(NumTrials[Condition=="PerceptualSim"]))
+with(m_count_trials,hist(NumTrials[Condition=="SemanticSim"]))
+
+# Descriptive Count of participants and # of trials in the aggregated plot above
+d_matched %.% group_by(ASD, Subject) %.% summarise(Count = n_distinct(TrialNo))
+#count of trials per condition for each subject
+d_matched %.% group_by(ASD, Subject, Condition) %.% summarise(Count = n_distinct(TrialNo))
+# number of participants included by group and condition 
+d_matched %.% group_by(ASD, Condition) %.% summarise(Count = n_distinct(Subject))
+
+names(d_matched)
+summary(d_matched)
+
+
+##################################################################
+##### Proportion of Looking Plots, using matched participants  ###
+##################################################################
+# Aggregated Plots
+# aggregated = each child contributes one average proportion of looks across trials
+#   in each condition to the average of Group proportion of looking in the plots
+# by_subject <- AggregateLooks(d_matched, ASD + Subject + Time + Condition ~ GazeByImageAOI)
+by_subject <- d_matched %.%
+  group_by(ASD,Condition,Time) %.%
+  summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
+
+m_aggregated_proportion <- by_subject %.% group_by(ASD, Condition, Time) %.% summarise(Proportion = mean(Proportion))
+qplot(data = m_aggregated_proportion, x = Time, y = Proportion, color = Condition) + 
+  facet_grid(ASD ~ .) + geom_line()+ geom_line(y=.5, colour="gray48") + labs(title = "Matched Groups")
+
+# Get proportion of looking across trials within a condition for each time bin
+m_proportion_over_trials <- d_matched %.% 
+  group_by(Subject,ASD,Condition,Time) %.% 
+  summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
+
+m_proportion_over_trials <- merge(m_proportion_over_trials,unique(d_matched[,c("Subject","CDIWG_WU")]),by="Subject")
+head(m_proportion_over_trials)
+
+save(m_proportion_over_trials,file="./matched_level1.Rdata")
+
+
+# Mean proportion of looking over test window and baseline window
+testWindow <- m_proportion_over_trials %.% filter(Time>=200 & Time<=1800)
+dim(m_proportion_over_trials) - dim(testWindow)
+#testWindowSummary collapses across time-bins to create a proportion of 
+# time looking by participant x condition (3 rows per participant )
+testWindowSummary <- testWindow %.% group_by(Subject,ASD,Condition) %.% 
+  summarise(ProportionTestWindow=mean(Proportion,na.rm=TRUE))%.% ungroup()
+# testWindowSummaryWide creates a wide dataset that has only one row per 
+#   participant, and a column for each condition  
+testWindowSummaryWide <- reshape(testWindowSummary, idvar="Subject", 
+         direction="wide", v.names="ProportionTestWindow", timevar="Condition") 
+
+
+baselineWindow <- m_proportion_over_trials %.% filter(Time>=-1400 & Time<200)
+dim(m_proportion_over_trials) - dim(baselineWindow)
+#same as lines above, but for baseline 
+baselineWindowSummary <- baselineWindow %.% group_by(Subject,ASD,Condition) %.% summarise(ProportionBaseline=mean(Proportion,na.rm=TRUE))
+
+baselineWindowSummaryWide <- reshape(baselineWindowSummary, idvar="Subject", direction="wide", v.names="ProportionBaseline", timevar="Condition") 
+
+########## MERGE CALCULATED VARIABLES ABOVE INTO IN PARTICPANT INFO 
+
+# merge the participant data into the main dataset 
+d_matched <- merge(d_matched, testWindowSummaryWide,by="Subject")
+d_matched <- merge(d_matched, baselineWindowSummaryWide,by="Subject")
+head(d_matched)
+
+#the dataset that you can use to run basic analyses is "participantinfo".  You can use this within R or export to Excel, SPSS, etc. 
+save(d_matched,file='looking_data_with_MatchedPinfo_clean.Rdata')
+#write.csv(particpantinfo, "participantInfoWithMeanProportion.csv", row.names = FALSE)
+#str(particpantinfo)
+
+
+#### Analyses for mated groups  ##################
+#ANCOVA
+# Compute difference score Testwindow - Baseline
+DiffScore <- testWindowSummary$ProportionTestWindow - baselineWindowSummary$ProportionBaseline
+
+dm.ancova <- testWindowSummary[,c("Subject","ASD","Condition")]
+dm.ancova <- merge(dm.ancova,unique(d[,c("Subject","CDIWG_WU")]),by="Subject")
+dm.ancova$C_CDIWG_WU <- dm.ancova$CDIWG_WU - mean(dm.ancova$CDIWG_WU)
+dm.ancova$DiffScore <- DiffScore
+
+library(lmSupport)
+contrasts(dm.ancova$ASD) <- varContrasts(dm.ancova$ASD,Type="DUMMY",RefLevel=2)
+# 1 = ASD as reference group, 2 = TD as reference group (RefLevel)
+# Orthogonal contrast for group
+#contrasts(dm.ancova$ASD) <- varContrasts(dm.ancova$ASD,Type="POC",POCList=list(c(1,-1)))
+#contrasts(dm.ancova$Condition) <- varContrasts(dm.ancova$Condition,Type="POC",
+#                                           POCList=list(c(1,-1,0),c(-1,-1,2)))
+contrasts(dm.ancova$Condition) <- varContrasts(dm.ancova$Condition,Type="DUMMY",RefLevel=1)
+
+matched.ancova<-lm(DiffScore~ASD*Condition+C_CDIWG_WU,data=dm.ancova)
+summary(matched.ancova)
+matched.anova<-lm(DiffScore~ASD*Condition,data=dm.ancova)
+summary(matched.anova)
+Anova(matched.ancova,type=3)  # This tests the aggregated effect of condition, not the contrasts
+levels(dm.ancova$Condition)
+
+################### HLM   ##########################
+library(nlme)
+library(lme4)
+library(lmSupport)
+
+# Create a centered CDI variable
+testWindow$C_CDIWG_WU <- testWindow$CDIWG_WU - mean(testWindow$CDIWG_WU)
+
+# Visualize the distribution of Proportion of looks to targets in the test window
+hist(testWindow$Proportion)
+
+# Look at contrasts and reset them if wanted
+contrasts(testWindow$ASD)
+levels(testWindow$Condition)
+contrasts(testWindow$ASD) <- varContrasts(testWindow$ASD,Type="DUMMY",RefLevel=2)
+# 1 = ASD as reference group, 2 = TD as reference group (RefLevel)
+# Orthogonal contrast for group
+#contrasts(testWindow$ASD) <- varContrasts(testWindow$ASD,Type="POC",POCList=list(c(1,-1)))
+#contrasts(testWindow$Condition) <- varContrasts(testWindow$Condition,Type="POC",
+#                                          POCList=list(c(1,-1,0),c(-1,-1,2)))
+contrasts(testWindow$Condition) <- varContrasts(testWindow$Condition,Type="DUMMY",RefLevel=1)
+
+# Empty model
+empty <- lme(Proportion ~ 1, random = ~ 1 | Subject, data = testWindow, method='ML')
+VarCorr(empty)
+
+# ERROR: unable to find an inherited method for function "VarCorr", for signature "lme"
+# detach("package:lme4")  
+
+(VC.empty <- as.numeric(VarCorr(empty)))
+(ICC <- VC.empty[1]/(VC.empty[1]+VC.empty[2]))
+# ICC isn't very high (02041)
+
+# RIMs
+RIM <- lme(Proportion ~ Time + ASD*Condition + C_CDIWG_WU, random = ~ 1|Subject, testWindow, method='ML')
+#RIM <- lmer(Proportion~Time+ASD*Condition+C_CDIWG_WU+(1|Subject),data=testWindow)
+summary(RIM)
+
+sq.RIM <- lme(Proportion ~ Time + I(Time^2) + ASD*Condition + C_CDIWG_WU,
+              random = ~ 1|Subject, testWindow, method='ML')
+#sq.RIM <- lmer(Proportion~Time+I(Time^2)+ASD*Condition+C_CDIWG_WU+(1|Subject),data=testWindow)
+summary(sq.RIM)
+
+unstruct <- gls(Proportion  ~ Time + ASD*Condition + C_CDIWG_WU, data = testWindow, 
+                correlation = corSymm(form = ~ 1 | Subject),  
+                weights = varIdent(form = ~ 1|Subject), method="ML")
+# I bet I don't get convergence because the time window????
+
+# RSM
+#RSM <- lmer(Proportion~Time+ASD*Condition+C_CDIWG_WU+(Time|Subject),data=m_proportion_over_trials)
+RSM <- lme(Proportion ~ Time + ASD*Condition + C_CDIWG_WU, random = ~ Time|Subject, testWindow, method='ML')
+summary(RSM)
+
+
+sq.RSM <- lme(Proportion ~ Time + I(Time^2) + ASD*Condition + C_CDIWG_WU, random = ~ Time|Subject, testWindow, method='ML')
+summary(sq.RSM)
+
+anova(RIM, sq.RIM, RSM, sq.RSM)
+anova(RSM, sq.RSM)
+
+sq.unstruct <- update(unstruct, Proportion ~ Time + I(Time^2) + ASD*Condition + C_CDIWG_WU)
+summary(sq.unstruct)
+
+
+RSM.AR1 <- update(RSM, correlation=corAR1(, form = ~ 1|Subject))  # convergence error
+
+#(RIM.AR1 <- lme(Proportion ~ Time + ASD*Condition + C_CDIWG_WU, random = ~ 1 | Subject,
+#               testWindow, method = 'ML', correlation=corAR1(, form = ~ 1|Subject)))
+RIM.AR1 <- update(RIM, correlation=corAR1(, form = ~ 1|Subject))
+
+sq.RIM.AR1 <- update(sq.RIM, correlation=corAR1(, form = ~ 1|Subject))
+summary(sq.RIM.AR1)
+
+RSM.hetero <- update(RSM, weights=varIdent(form = ~ 1|Subject))  # convergence error
+sq.RSM.hetero <- update(sq.RSM, weights=varIdent(form = ~ 1|Subject))  # convergence error
+
+
+anova(RIM, sq.RIM, RIM.AR1, sq.RIM.AR1, RSM, sq.RSM)
+anova(RIM.AR1, sq.RIM.AR1)
+
+logLik(RIM.AR1)*-2
+logLik(sq.RIM.AR1)*-2   ##### This gives you your deviance score!!!!!!!
+summary(sq.RIM.AR1)
+
+#> anova(RIM, sq.RIM, RIM.AR1, sq.RIM.AR1, RSM, sq.RSM)
+#Model df        AIC        BIC   logLik   Test   L.Ratio p-value
+#RIM            1 10  -4358.294  -4296.201 2189.147                         
+#sq.RIM         2 11  -4482.863  -4414.560 2252.431 1 vs 2 126.56906  <.0001
+#RIM.AR1        3 11 -13623.141 -13554.838 6822.570                         
+#sq.RIM.AR1     4 12 -13641.803 -13567.292 6832.902 3 vs 4  20.66276  <.0001
+#RSM            5 12  -4871.952  -4797.440 2447.976                         
+#sq.RSM         6 13  -5019.244  -4938.523 2522.622 5 vs 6 149.29250  <.0001
+
+#> summary(sq.RIM.AR1)
+#Linear mixed-effects model fit by maximum likelihood
+#Data: testWindow 
+#AIC       BIC   logLik
+#-13641.8 -13567.29 6832.902
+
+#Random effects:
+#  Formula: ~1 | Subject
+#(Intercept)  Residual
+#StdDev: 2.74888e-05 0.1483597
+
+#Correlation Structure: AR(1)
+#Formula: ~1 | Subject 
+#Parameter estimate(s):
+#  Phi 
+#0.9678042 
+#Fixed effects: Proportion ~ Time + I(Time^2) + ASD * Condition + C_CDIWG_WU 
+#                                                 Value    Std.Error   DF   t-value p-value
+#(Intercept)                                    0.5053493 0.03481305 3644 14.516090  0.0000
+#Time                                           0.0002514 0.00004009 3644  6.270960  0.0000
+#I(Time^2)                                     -0.0000001 0.00000002 3644 -4.553994  0.0000
+#ASDASD_v_TD                                   -0.1752398 0.03424227   22 -5.117646  0.0000
+#ConditionPerceptualSim_v_BothDiff             -0.0858869 0.01640706 3644 -5.234752  0.0000
+#ConditionSemanticSim_v_BothDiff               -0.0998861 0.02899559 3644 -3.444872  0.0006
+#C_CDIWG_WU                                     0.0003266 0.00022281   22  1.465966  0.1568
+#ASDASD_v_TD:ConditionPerceptualSim_v_BothDiff  0.1981812 0.01483805 3644 13.356288  0.0000
+#ASDASD_v_TD:ConditionSemanticSim_v_BothDiff    0.1815953 0.02065940 3644  8.789963  0.0000
+#Correlation: 
+#  (Intr) Time   I(T^2) ASDASD_v_TD CPS__B CSS__B C_CDIW
+#Time                                          -0.489                                               
+#I(Time^2)                                      0.369 -0.977                                        
+#ASDASD_v_TD                                   -0.511  0.000  0.000                                 
+#ConditionPerceptualSim_v_BothDiff             -0.578  0.158  0.004  0.124                          
+#ConditionSemanticSim_v_BothDiff               -0.628  0.183  0.000  0.112       0.884              
+#C_CDIWG_WU                                    -0.060  0.000  0.000  0.117       0.000  0.000       
+#ASDASD_v_TD:ConditionPerceptualSim_v_BothDiff  0.134  0.000  0.000 -0.263      -0.470 -0.258  0.000
+#ASDASD_v_TD:ConditionSemanticSim_v_BothDiff    0.154  0.000  0.000 -0.302      -0.327 -0.371  0.000
+#ASDASD__TD:CP
+#Time                                                       
+#I(Time^2)                                                  
+#ASDASD_v_TD                                                
+#ConditionPerceptualSim_v_BothDiff                          
+#ConditionSemanticSim_v_BothDiff                            
+#C_CDIWG_WU                                                 
+#ASDASD_v_TD:ConditionPerceptualSim_v_BothDiff              
+#ASDASD_v_TD:ConditionSemanticSim_v_BothDiff    0.696       
+
+#Standardized Within-Group Residuals:
+#  Min          Q1         Med          Q3         Max 
+#-3.10023474 -0.66045952 -0.02447747  0.66881273  3.46339138 
+
+#Number of Observations: 3675
+#Number of Groups: 25 
+
+
 ##### Participants with minimum CDI subset 
 ## set thresholds for minimum CDI scores for inclusion in the subset 
 TD_CDI_min <- 75
@@ -104,11 +356,26 @@ d_CDI <- d %.% filter((CDIWG_WU>=TD_CDI_min & ASD=="TD") | (CDIWG_WU>=ASD_CDI_mi
 # Aggregated Plots
 # aggregated = each child contributes one average proportion of looks across trials
 #   in each condition to the average of Group proportion of looking in the plots
-by_subject <- AggregateLooks(d, ASD + Subject + Time + Condition ~ GazeByImageAOI)
+by_subject <- d %.%
+  group_by(ASD,Condition,Time) %.%
+  summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
+
+#by_subject <- AggregateLooks(d, ASD + Subject + Time + Condition ~ GazeByImageAOI)
 aggregated_proportion <- by_subject %.% group_by(ASD, Condition, Time) %.% summarise(Proportion = mean(Proportion))
 qplot(data = aggregated_proportion, x = Time, y = Proportion, color = Condition) + 
   facet_grid(ASD ~ .) + geom_line()+ geom_line(y=.5, colour="gray48") + 
   labs(title = "Full Dataset - Looking Behavior")
+
+
+full_proportion_over_trials <- d %.% 
+  group_by(Subject,ASD,Condition,Time) %.% 
+  summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
+
+full_proportion_over_trials <- merge(full_proportion_over_trials,unique(d[,c("Subject","CDIWG_WU","Bayley_composite","Gender","Maternal_ed")]),by="Subject")
+head(full_proportion_over_trials)
+
+
+save(full_proportion_over_trials,file="./full_level1.Rdata")
 
 
 testWindow <- by_subject %.% filter(Time>=200 & Time<=1800)
@@ -132,8 +399,8 @@ baselineWindowSummaryWide <- reshape(baselineWindowSummary, idvar="Subject", dir
 ########## MERGE CALCULATED VARIABLES ABOVE INTO IN PARTICPANT INFO 
 
 # merge the participant data into the main dataset 
-d <- merge(d, testWindowSummaryWide,by="Subject")
-d <- merge(d, baselineWindowSummaryWide,by="Subject")
+#d <- merge(d, testWindowSummaryWide,by="Subject")
+#d <- merge(d, baselineWindowSummaryWide,by="Subject")
 
 #the dataset that you can use to run basic analyses is "participantinfo".  You can use this within R or export to Excel, SPSS, etc. 
 save(d,file='looking_data_with_pinfo_clean.Rdata')
@@ -173,105 +440,6 @@ summary(ancova_cdi)
 
 levels(d.ancova$Condition)
 
-#################################################################
-######same plot as above, using matched participants  ###########
-#################################################################
-# Aggregated Plots
-# aggregated = each child contributes one average proportion of looks across trials
-#   in each condition to the average of Group proportion of looking in the plots
-# by_subject <- AggregateLooks(d_matched, ASD + Subject + Time + Condition ~ GazeByImageAOI)
-by_subject <- d_matched %.%
-  group_by(ASD,Condition,Time) %.%
-  summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
-
-m_aggregated_proportion <- by_subject %.% group_by(ASD, Condition, Time) %.% summarise(Proportion = mean(Proportion))
-qplot(data = m_aggregated_proportion, x = Time, y = Proportion, color = Condition) + 
-  facet_grid(ASD ~ .) + geom_line()+ geom_line(y=.5, colour="gray48") + labs(title = "Matched Groups")
-
-m_proportion_over_trials <- d_matched %.% 
-  group_by(Subject,ASD,Condition,Time) %.% 
-  summarize(Proportion=mean(GazeByImageAOI,na.rm=TRUE))
-
-m_proportion_over_trials <- merge(m_proportion_over_trials,unique(d_matched[,c("Subject","CDIWG_WU")]),by="Subject")
-head(m_proportion_over_trials)
-
-save(m_proportion_over_trials,file="./matched_level1.Rdata")
-
-
-testWindow <- m_proportion_over_trials %.% filter(Time>=200 & Time<=1800)
-dim(m_proportion_over_trials) - dim(testWindow)
-#testWindowSummary collapses across time-bins to create a proportion of 
-# time looking by participant x condition (3 rows per participant )
-testWindowSummary <- testWindow %.% group_by(Subject,ASD,Condition) %.% 
-  summarise(ProportionTestWindow=mean(Proportion,na.rm=TRUE))%.% ungroup()
-# testWindowSummaryWide creates a wide dataset that has only one row per 
-#   participant, and a column for each condition  
-testWindowSummaryWide <- reshape(testWindowSummary, idvar="Subject", 
-           direction="wide", v.names="ProportionTestWindow", timevar="Condition") 
-
-
-baselineWindow <- m_proportion_over_trials %.% filter(Time>=-1400 & Time<200)
-dim(m_proportion_over_trials) - dim(baselineWindow)
-#same as lines above, but for baseline 
-baselineWindowSummary <- baselineWindow %.% group_by(Subject,ASD,Condition) %.% summarise(ProportionBaseline=mean(Proportion,na.rm=TRUE))
-
-baselineWindowSummaryWide <- reshape(baselineWindowSummary, idvar="Subject", direction="wide", v.names="ProportionBaseline", timevar="Condition") 
-
-########## MERGE CALCULATED VARIABLES ABOVE INTO IN PARTICPANT INFO 
-
-# merge the participant data into the main dataset 
-d_matched <- merge(d_matched, testWindowSummaryWide,by="Subject")
-d_matched <- merge(d_matched, baselineWindowSummaryWide,by="Subject")
-
-#the dataset that you can use to run basic analyses is "participantinfo".  You can use this within R or export to Excel, SPSS, etc. 
-save(d_matched,file='looking_data_with_MatchedPinfo_clean.Rdata')
-#write.csv(particpantinfo, "participantInfoWithMeanProportion.csv", row.names = FALSE)
-#str(particpantinfo)
-
-#### Analyses for mated groups  ##################
-#ANCOVA
-# Compute difference score Testwindow - Baseline
-DiffScore <- testWindowSummary$ProportionTestWindow - baselineWindowSummary$ProportionBaseline
-
-dm.ancova <- testWindowSummary[,c("Subject","ASD","Condition")]
-dm.ancova <- merge(dm.ancova,unique(d[,c("Subject","CDIWG_WU")]),by="Subject")
-dm.ancova$C_CDIWG_WU <- dm.ancova$CDIWG_WU - mean(dm.ancova$CDIWG_WU)
-dm.ancova$DiffScore <- DiffScore
-
-library(lmSupport)
-contrasts(dm.ancova$ASD) <- varContrasts(dm.ancova$ASD,Type="DUMMY",RefLevel=2)
-# 1 = ASD as reference group, 2 = TD as reference group (RefLevel)
-# Orthogonal contrast for group
-#contrasts(dm.ancova$ASD) <- varContrasts(dm.ancova$ASD,Type="POC",POCList=list(c(1,-1)))
-contrasts(dm.ancova$Condition) <- varContrasts(dm.ancova$Condition,Type="POC",
-                                    POCList=list(c(1,-1,0),c(-1,-1,2)))
-
-matched.ancova<-lm(DiffScore~ASD*Condition,data=dm.ancova)
-summary(matched.ancova)
-Anova(matched.ancova,type=3)
-levels(dm.ancova$Condition)
-library(nlme)
-library(lme4)
-m_proportion_over_trials$C_CDIWG_WU <- m_proportion_over_trials$CDIWG_WU - mean(m_proportion_over_trials$CDIWG_WU)
-RIM <- lmer(Proportion~Time+I(Time^2)+ASD*Condition+C_CDIWG_WU+(1|Subject),data=m_proportion_over_trials)
-summary(RIM)
-
-RIM <- lme(Proportion ~ Time+ASD+Condition, random = ~ 1 | Subject, m_proportion_over_trials, method = 'ML')
-
-RSM <- lme(attit ~ age11, random = ~ age11 | id, NYS, method = 'ML')
-
-
-
-
-# Descriptive Count of participants and # of trials in the aggregated plot above
-d_matched %.% group_by(ASD, Subject) %.% summarise(Count = n_distinct(TrialNo))
-#count of trials per condition for each subject
-d_matched %.% group_by(ASD, Subject, Condition) %.% summarise(Count = n_distinct(TrialNo))
-# number of participants included by group and condition 
-d_matched %.% group_by(ASD, Condition) %.% summarise(Count = n_distinct(Subject))
-
-names(d_matched)
-summary(d_matched)
 
 # +--------------------------------+
 # |  Exploratory Data Analysis     | ####
