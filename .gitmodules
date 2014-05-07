@@ -1,0 +1,3 @@
+[submodule "lookr"]
+	path = lookr
+	url = git@github.com:tjmahr/lookr.git
