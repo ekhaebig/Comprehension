@@ -177,11 +177,12 @@ database_filename <- list.files('./', pattern = "Pilot_Database_[0-9]{6}")
 database_filename <- paste0('.', "/", database_filename)
 
 # Load the excel data 
+print(paste('Loading participant info from',database_filename ))
 participantinfo <- read.xlsx(database_filename, 1)
-
+print("Merging into the looking dataset...")
 # merge the participant data into the main dataset 
 longTable <- merge(longTable, participantinfo, by.x="Subject", by.y="ID")
-
+print("DONE!")
 
 ######### SAVE DATASET
 longTable[ longTable==-99 ] <- NA
